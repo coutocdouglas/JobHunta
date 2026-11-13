@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+build/
+dist/
+Output/
+*.spec
+.env
+vagas.db
+jobhunta.log

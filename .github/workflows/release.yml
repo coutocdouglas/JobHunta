@@ -1,0 +1,73 @@
+name: Release
+
+# Para lançar uma versão nova:  git tag v0.2.0 && git push origin v0.2.0
+# O Actions compila, gera o instalador e publica a Release; os programas já
+# instalados oferecem a atualização sozinhos.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:   # teste manual do build (não publica Release)
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Definir versão a partir da tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}".TrimStart("v")
+          (Get-Content version.py) -replace '__version__ = ".*"', "__version__ = `"$v`"" | Set-Content version.py -Encoding utf8
+          Get-Content version.py
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Empacotar (PyInstaller)
+        run: python build.py
+
+      - name: Teste de fumaça do executável
+        shell: pwsh
+        env:
+          JOBHUNTA_SMOKE: "1"
+        run: |
+          $p = Start-Process -FilePath "dist\JobHunta\JobHunta.exe" -PassThru -Wait -NoNewWindow
+          if ($p.ExitCode -ne 0) {
+            if (Test-Path "$env:APPDATA\JobHunta\jobhunta.log") { Get-Content "$env:APPDATA\JobHunta\jobhunta.log" -Tail 60 }
+            throw "Executável não subiu (código $($p.ExitCode))"
+          }
+
+      - name: Montar instalador (Inno Setup)
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path version.py -Pattern '__version__ = "(.*)"').Matches[0].Groups[1].Value
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc "/DAppVersion=$v" installer\JobHunta.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC falhou" }
+          $h = (Get-FileHash Output\JobHunta-Setup.exe -Algorithm SHA256).Hash.ToLower()
+          "$h  JobHunta-Setup.exe" | Out-File Output\JobHunta-Setup.exe.sha256 -Encoding ascii
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JobHunta-Setup
+          path: Output/*
+
+      - name: Publicar Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            Output/JobHunta-Setup.exe
+            Output/JobHunta-Setup.exe.sha256
+          generate_release_notes: true
